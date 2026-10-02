@@ -705,7 +705,6 @@ class HiddenStatesExtension:
         for layer_idx, layer in enumerate(layers):
             if isinstance(layer, PPMissingLayer):
                 continue
-            layer.register_forward_pre_hook(_make_pre_hook(self, layer_idx))
             layer.register_forward_hook(_make_hook(self, layer_idx))
 
     # ------------------------------------------------------------------
