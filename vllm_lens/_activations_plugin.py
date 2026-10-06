@@ -311,8 +311,10 @@ async def _patched_generate(
     # Extract hooks (callables can't survive msgspec).
     hooks_list = _decode_hooks(extra.pop("apply_hooks", None))
 
-    # Allow explicit prefix-cache bypass via extra_args.
+    # Allow explicit prefix-cache bypass via extra_args, and explicit reads for a
+    # hooked request whose caller keys its cache_salt by the hook state.
     skip_kv_cache = extra.pop("skip_reading_prefix_cache", None)
+    read_kv_cache = extra.pop("read_prefix_cache", None)
 
     has_persistent = getattr(self, "_has_persistent_hooks", False)
     needs_hooks = (
@@ -321,9 +323,10 @@ async def _patched_generate(
         or hooks_list is not None
         or has_persistent
     )
-    if needs_hooks or skip_kv_cache:
+    if skip_kv_cache or wants_activations or (needs_hooks and not read_kv_cache):
         # Hooks rely on forward passes firing; prefix-cached tokens skip
         # computation entirely, so force a fresh prefill for this request.
+        # Activation capture always prefills in full.
         effective_params.skip_reading_prefix_cache = True
     if needs_hooks and not getattr(self, "_hooks_installed", False):
         await self.collective_rpc("install_hooks")
@@ -436,18 +439,20 @@ def _prepare_offline_params(
                 sp.extra_args = {}
             sp.extra_args["_hook_id"] = hook_id
 
-    # Pop skip_reading_prefix_cache from extra_args for each request.
-    any_skip_kv_cache = False
-    for sp in params_list:
-        if (sp.extra_args or {}).pop("skip_reading_prefix_cache", None):
-            any_skip_kv_cache = True
-
     has_steering = len(steering_payloads) > 0
     has_hooks = len(hook_payloads) > 0
     has_persistent = getattr(self, "_has_persistent_hooks", False)
     needs_hooks = wants_activations or has_steering or has_hooks or has_persistent
-    if needs_hooks or any_skip_kv_cache:
-        for sp in params_list:
+
+    # Pop the prefix-cache flags from extra_args for each request: skip_reading_prefix_cache
+    # forces a fresh prefill, read_prefix_cache lets a hooked request read cached blocks
+    # (the caller keys its cache_salt by the hook state). Activation capture always
+    # prefills in full.
+    for sp in params_list:
+        extra = sp.extra_args or {}
+        skip_kv_cache = extra.pop("skip_reading_prefix_cache", None)
+        read_kv_cache = extra.pop("read_prefix_cache", None)
+        if skip_kv_cache or wants_activations or (needs_hooks and not read_kv_cache):
             sp.skip_reading_prefix_cache = True
 
     if needs_hooks and not getattr(self, "_hooks_installed", False):
